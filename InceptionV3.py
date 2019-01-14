@@ -130,7 +130,7 @@ with graph.as_default():
         conv1_1x1_4 = conv2d_s1(maxpool1, W_conv1_1x1_4) + b_conv1_1x1_4
 
         # concatenate all the feature maps and add a relu
-        inception1 = tf.nn.relu(tf.concat(3, [conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4]))
+        inception1 = tf.nn.relu(tf.concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4], axis=3))
 
         # Inception Module 2
         conv2_1x1_1 = conv2d_s1(inception1, W_conv2_1x1_1) + b_conv2_1x1_1
@@ -142,7 +142,7 @@ with graph.as_default():
         conv2_1x1_4 = conv2d_s1(maxpool2, W_conv2_1x1_4) + b_conv2_1x1_4
 
         # concatenate all the feature maps and add a relu
-        inception2 = tf.nn.relu(tf.concat(3, [conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4]))
+        inception2 = tf.nn.relu(tf.concat([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4], axis=3))
 
         # flatten features for fully connected layer
         inception2_flat = tf.reshape(inception2, [-1, 28 * 28 * 4 * output_map2])
@@ -157,7 +157,7 @@ with graph.as_default():
 
 
     loss = tf.reduce_mean(
-        tf.nn.softmax_cross_entropy_with_logits(model(X), y_))
+        tf.nn.softmax_cross_entropy_with_logits(logits=model(X), labels=y_))
     opt = tf.train.AdamOptimizer(1e-4).minimize(loss)
 
     predictions_val = tf.nn.softmax(model(tf_valX, train=False))
