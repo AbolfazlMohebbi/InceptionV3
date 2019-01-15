@@ -1,0 +1,3 @@
+[submodule "deep_Core"]
+	path = deep_Core
+	url = https://github.com/Dom303/deep-Core
