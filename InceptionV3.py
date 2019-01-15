@@ -23,13 +23,13 @@ def main():
     batch_size = 50
     test_batch_size = 100
     output_map1 = 33
-    output_map2 = 66 * 3
+    output_map2 = 66
     no_HiddenNodes = 700 #1028
     no_OutputNodes = 10
     OutputConv1x1 = 16
     dropout_rate=0.5
     use_gdm = True
-    learning_rate = 1e-5
+    learning_rate = 1e-4
     im_width = 28
     im_height = 28
     im_pix = im_height * im_width
@@ -102,7 +102,7 @@ def main():
         ########### Inception Module 2 #############
         if use_gdm:
             input_map1 = int(4 * output_map1)
-            input_map2 = int(4 * output_map2 * 1/3)
+            input_map2 = int(4 * output_map2)
         else:
             input_map1 = 4 * output_map1
             input_map2 = 4 * output_map2
@@ -169,31 +169,34 @@ def main():
             maxpool2 = max_pool_3x3_s1(inception1)
             conv2_1x1_4 = conv2d_s1(maxpool2, W_conv2_1x1_4) + b_conv2_1x1_4
 
-            def split_and_concat_3(array):
-                arr_1 = []
-                arr_2 = []
-                arr_3 = []
+            def split_and_concat(array, num_split):
+                arrays = [[] for _ in range(num_split)]
                 for elem in array:
-                    elem_1, elem_2, elem_3 = tf.split(elem, num_or_size_splits=3, axis=3)
-                    arr_1.append(elem_1)
-                    arr_2.append(elem_2)
-                    arr_3.append(elem_3)
-                tensor_1 = tf.concat(arr_1, axis=3)
-                tensor_2 = tf.concat(arr_2, axis=3)
-                tensor_3 = tf.concat(arr_3, axis=3)
-                return tensor_1, tensor_2, tensor_3
+                    elems = tf.split(elem, num_or_size_splits=num_split, axis=3)
+                    for idx, array in enumerate(arrays):
+                        array.append(elems[idx])
+
+                tensors = []
+                for idx, array in enumerate(arrays):
+                    tensors.append(tf.concat(array, axis=3))
+
+                return tensors
 
 
             # concatenate all the feature maps and add a relu
             # inception2_temp = tf.nn.relu(tf.concat([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4], axis=3))
             # inception2_temp_1x1, _ = nn.conv_layer_uniform(inception2_temp, 1, num_output=(4 * output_map2),
             #                                                name='in2_temp_1x1', add_bias=True, add_relu=False)
-            inception2_I1, inception2_C1x, inception2_C1y = split_and_concat_3([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4])
+
+            inception2_C1x, inception2_C1y = split_and_concat([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4], num_split=2)
             #
             # inception2_I1, inception2_C1x, inception2_C1y = tf.split(inception2_temp_1x1, 3, axis=3)
-            inception2_gf = gf.gradient_domain_merging_with_orientation(inception2_I1, inception2_C1x, inception2_C1y, greens_function)
+            # inception2_gf = gf.gradient_domain_merging_with_orientation(inception2_I1, inception2_C1x, inception2_C1y, greens_function)
+            inception2_gf = gf.gradient_domain_integration(inception2_C1x, inception2_C1y, greens_function)
+            in2x, in2y = tf.image.image_gradients(inception2_gf)
             # inception2 = tf.concat([inception2_I1, inception2_C1x, inception2_C1y, inception2_gf], axis=3)
-            inception2 = inception2_gf
+            # inception2 = tf.concat([inception2_gf, in2x, in2y], axis=
+            inception2 = tf.concat([in2x, in2y], axis=3)
 
             # in2x, in2y = tf.split(inception2_temp, 2)
             # inception2 = gf.gradient_domain_integration(in2x, in2y, greens_function)
