@@ -22,13 +22,13 @@ def main():
 
     batch_size = 50
     test_batch_size = 100
-    output_map1 = 32
-    output_map2 = 64
+    output_map1 = 16
+    output_map2 = 32
     no_HiddenNodes = 700 #1028
     no_OutputNodes = 10
     OutputConv1x1 = 16
     dropout_rate=0.5
-    use_gdm = True
+    use_gid = False
     learning_rate = 1e-4
     im_width = 28
     im_height = 28
@@ -86,63 +86,64 @@ def main():
 
             return tensors
 
-        ########### Inception Module 1 #############
-        #
-        # follows input
-        W_conv1_1x1_1 = createWeight([1, 1, 1, output_map1], 'W_conv1_1x1_1')
-        b_conv1_1x1_1 = createWeight([output_map1], 'b_conv1_1x1_1')
+        def gradient_integration_derivative(array_of_tensors, add_weights=True):
+            # Split each array of the tensor and concat them as 2 tensors
+            C1x_temp, C1y_temp = split_and_concat(array_of_tensors, num_split=2)
 
-        # follows input
-        W_conv1_1x1_2 = createWeight([1, 1, 1, OutputConv1x1], 'W_conv1_1x1_2')
-        b_conv1_1x1_2 = createWeight([OutputConv1x1], 'b_conv1_1x1_2')
+            # Add weights if necessary
+            if add_weights:
+                num_channels = tf.shape(C1x_temp)
+                C1x, _ = nn.conv_layer_uniform(C1x_temp, 1, num_channels[3], 'weights_before_GDI_C1x', add_bias=False, add_relu=False)
+                C1y, _ = nn.conv_layer_uniform(C1y_temp, 1, num_channels[3], 'weights_before_GDI_C1y', add_bias=False, add_relu=False)
+            else:
+                C1x = C1x_temp
+                C1y = C1y_temp
 
-        # follows input
-        W_conv1_1x1_3 = createWeight([1, 1, 1, OutputConv1x1], 'W_conv1_1x1_3')
-        b_conv1_1x1_3 = createWeight([OutputConv1x1], 'b_conv1_1x1_3')
+            # Integrate then derivate the features
+            integration = gf.gradient_domain_integration(C1x, C1y, greens_function)
+            integration_dx, integration_dy = tf.image.image_gradients(integration)
+            integration_gradient = tf.concat([tf.nn.relu(integration_dx), tf.nn.relu(integration_dy)], axis=3)
+            return integration_gradient
 
-        # follows 1x1_2
-        W_conv1_3x3 = createWeight([3, 3, OutputConv1x1, output_map1], 'W_conv1_3x3')
-        b_conv1_3x3 = createWeight([output_map1], 'b_conv1_3x3')
+        def inception_module(in_tensor, layers_output_channels, mod_name, use_gid=False):
 
-        # follows 1x1_3
-        W_conv1_5x5 = createWeight([5, 5, OutputConv1x1, output_map1], 'W_conv1_5x5')
-        b_conv1_5x5 = createBias([output_map1], 'b_conv1_5x5')
+            # Add all the convolutional layers
+            num_out = layers_output_channels
+            num_out_half = int(num_out/2)
 
-        # follows max pooling
-        W_conv1_1x1_4 = createWeight([1, 1, 1, output_map1], 'W_conv1_1x1_4')
-        b_conv1_1x1_4 = createWeight([output_map1], 'b_conv1_1x1_4')
+            # 1st branch
+            conv_1x1_1 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out, name='conv_' + mod_name + '_1x1_1',
+                                              add_relu=True, add_bias=True)
 
-        ########### Inception Module 2 #############
-        if use_gdm:
-            input_map1 = int(4 * output_map1)
-            input_map2 = int(4 * output_map2)
-        else:
-            input_map1 = 4 * output_map1
-            input_map2 = 4 * output_map2
-        #
-        # follows inception1
-        W_conv2_1x1_1 = createWeight([1, 1, input_map1, output_map2], 'W_conv2_1x1_1')
-        b_conv2_1x1_1 = createWeight([output_map2], 'b_conv2_1x1_1')
+            # 2nd branch
+            conv_1x1_2 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_2',
+                                              add_relu=True, add_bias=True)
+            conv_3x3_2 = nn.conv_layer_truncated_normal(conv_1x1_2, 3, num_out, name='conv_' + mod_name + '_3x3_2',
+                                              add_relu=True, add_bias=True)
 
-        # follows inception1
-        W_conv2_1x1_2 = createWeight([1, 1, input_map1, OutputConv1x1], 'W_conv2_1x1_2')
-        b_conv2_1x1_2 = createWeight([OutputConv1x1], 'b_conv2_1x1_2')
+            # 3rd branch
+            conv_1x1_3 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_3',
+                                              add_relu=True, add_bias=True)
+            conv_5x5_3 = nn.conv_layer_truncated_normal(conv_1x1_3, 5, num_out, name='conv_' + mod_name + '_5x5_3',
+                                              add_relu=True, add_bias=True)
 
-        # follows inception1
-        W_conv2_1x1_3 = createWeight([1, 1, input_map1, OutputConv1x1], 'W_conv2_1x1_3')
-        b_conv2_1x1_3 = createWeight([OutputConv1x1], 'b_conv2_1x1_3')
+            # 4th branch
+            maxpool_4 = max_pool_3x3_s1(in_tensor)
+            conv_1x1_4 = nn.conv_layer_truncated_normal(maxpool_4, 1, num_out, name='conv_' + mod_name + '_1x1_4',
+                                              add_relu=True, add_bias=True)
 
-        # follows 1x1_2
-        W_conv2_3x3 = createWeight([3, 3, OutputConv1x1, output_map2], 'W_conv2_3x3')
-        b_conv2_3x3 = createWeight([output_map2], 'b_conv2_3x3')
+            # Use the gradient-integration-derivative if required, else concat the tensors
+            tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
+            if use_gid:
+                inception_out = gradient_integration_derivative(tensor_array1, add_weights=True)
+            else:
+                inception_out = tf.concat(tensor_array1, axis=3)
 
-        # follows 1x1_3
-        W_conv2_5x5 = createWeight([5, 5, OutputConv1x1, output_map2], 'W_conv2_5x5')
-        b_conv2_5x5 = createBias([output_map2], 'b_conv2_5x5')
+            return inception_out
 
-        # follows max pooling
-        W_conv2_1x1_4 = createWeight([1, 1, input_map1, output_map2], 'W_conv2_1x1_4')
-        b_conv2_1x1_4 = createWeight([output_map2], 'b_conv2_1x1_4')
+        input_map1 = 4 * output_map1
+        input_map2 = 4 * output_map2
+
 
         ############ Fully connected layers #############
         # since padding is same, the feature map with there will be 4 28*28*output_map2
@@ -155,63 +156,11 @@ def main():
         greens_function = gf.create_green_function((im_width, im_height))
 
         def model(x, train=True):
-            # Inception Module 1
-            conv1_1x1_1 = conv2d_s1(x, W_conv1_1x1_1) + b_conv1_1x1_1
-            conv1_1x1_2 = tf.nn.relu(conv2d_s1(x, W_conv1_1x1_2) + b_conv1_1x1_2)
-            conv1_1x1_3 = tf.nn.relu(conv2d_s1(x, W_conv1_1x1_3) + b_conv1_1x1_3)
-            conv1_3x3 = conv2d_s1(conv1_1x1_2, W_conv1_3x3) + b_conv1_3x3
-            conv1_5x5 = conv2d_s1(conv1_1x1_3, W_conv1_5x5) + b_conv1_5x5
-            maxpool1 = max_pool_3x3_s1(x)
-            conv1_1x1_4 = conv2d_s1(maxpool1, W_conv1_1x1_4) + b_conv1_1x1_4
-
-            # concatenate all the feature maps and add a relu
-            # inception1_temp = tf.nn.relu(tf.concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4], axis=3))
-            # inception1_I1, inception1_C1x, inception1_C1y = tf.split(inception1_temp, 3, axis=3)
-            # inception1_gf = gf.gradient_domain_merging_with_orientation(inception1_I1, inception1_C1x, inception1_C1y, greens_function)
-            # inception1_gf_1x1, _ = nn.conv_layer_uniform(inception1_gf, 1, num_output=int(input_map1/4),
-            #                                          name='in1_gf_1x1', add_bias=True, add_relu=False)
-            # inception1 = tf.concat([inception1_temp, inception1_gf_1x1], axis=3)
-            # inception1 = inception1_temp
-
-            inception1_C1x, inception1_C1y = split_and_concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4],
-                                                              num_split=2)
-
-            inception1_gf = gf.gradient_domain_integration(inception1_C1x, inception1_C1y, greens_function)
-            in1x, in1y = tf.image.image_gradients(inception1_gf)
-            inception1 = tf.concat([tf.nn.relu(in1x), tf.nn.relu(in1y)], axis=3)
-
-            # Inception Module 2
-            conv2_1x1_1 = conv2d_s1(inception1, W_conv2_1x1_1) + b_conv2_1x1_1
-            conv2_1x1_2 = tf.nn.relu(conv2d_s1(inception1, W_conv2_1x1_2) + b_conv2_1x1_2)
-            conv2_1x1_3 = tf.nn.relu(conv2d_s1(inception1, W_conv2_1x1_3) + b_conv2_1x1_3)
-            conv2_3x3 = conv2d_s1(conv2_1x1_2, W_conv2_3x3) + b_conv2_3x3
-            conv2_5x5 = conv2d_s1(conv2_1x1_3, W_conv2_5x5) + b_conv2_5x5
-            maxpool2 = max_pool_3x3_s1(inception1)
-            conv2_1x1_4 = conv2d_s1(maxpool2, W_conv2_1x1_4) + b_conv2_1x1_4
-
-
-
-
-            # concatenate all the feature maps and add a relu
-            # inception2_temp = tf.nn.relu(tf.concat([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4], axis=3))
-            # inception2_temp_1x1, _ = nn.conv_layer_uniform(inception2_temp, 1, num_output=(4 * output_map2),
-            #                                                name='in2_temp_1x1', add_bias=True, add_relu=False)
-
-            inception2_C1x, inception2_C1y = split_and_concat([conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4], num_split=2)
-            #
-            # inception2_I1, inception2_C1x, inception2_C1y = tf.split(inception2_temp_1x1, 3, axis=3)
-            # inception2_gf = gf.gradient_domain_merging_with_orientation(inception2_I1, inception2_C1x, inception2_C1y, greens_function)
-            inception2_gf = gf.gradient_domain_integration(inception2_C1x, inception2_C1y, greens_function)
-            in2x, in2y = tf.image.image_gradients(inception2_gf)
-            # inception2 = tf.concat([inception2_I1, inception2_C1x, inception2_C1y, inception2_gf], axis=3)
-            # inception2 = tf.concat([inception2_gf, in2x, in2y], axis=
-            inception2 = tf.concat([tf.nn.relu(in2x), tf.nn.relu(in2y)], axis=3)
-
-            # in2x, in2y = tf.split(inception2_temp, 2)
-            # inception2 = gf.gradient_domain_integration(in2x, in2y, greens_function)
+            in_1 = inception_module(x, output_map1, 'in_1', use_gid=use_gid)
+            in_2 = inception_module(in_1, output_map2, 'in_2', use_gid=use_gid)
 
             # flatten features for fully connected layer
-            inception2_flat = tf.reshape(inception2, [-1, im_pix * input_map2])
+            inception2_flat = tf.reshape(in_2, [-1, im_pix * input_map2])
 
             # Fully connected layers
             if train:
@@ -271,6 +220,7 @@ def main():
             val_writer.add_summary(this_summary, s)
 
             print("step: " + str(s))
+            print("loss value: " + str(loss_value))
             print("validation accuracy: " + str(val_accuracy))
             print(" ")
 
