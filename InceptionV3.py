@@ -22,8 +22,8 @@ def main():
 
     batch_size = 50
     test_batch_size = 100
-    output_map1 = 16
-    output_map2 = 32
+    output_map1 = 32
+    output_map2 = 64
     no_HiddenNodes = 700 #1028
     no_OutputNodes = 10
     OutputConv1x1 = 16
@@ -33,7 +33,7 @@ def main():
     im_width = 28
     im_height = 28
     im_pix = im_height * im_width
-    num_steps = 20000
+    num_steps = 100
 
 
 
@@ -107,37 +107,38 @@ def main():
 
         def inception_module(in_tensor, layers_output_channels, mod_name, use_gid=False):
 
-            # Add all the convolutional layers
-            num_out = layers_output_channels
-            num_out_half = int(num_out/2)
+            with tf.name_scope(mod_name):
+                # Add all the convolutional layers
+                num_out = layers_output_channels
+                num_out_half = int(num_out/2)
 
-            # 1st branch
-            conv_1x1_1 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out, name='conv_' + mod_name + '_1x1_1',
-                                              add_relu=True, add_bias=True)
+                # 1st branch
+                conv_1x1_1 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out, name='conv_' + mod_name + '_1x1_1',
+                                                  add_relu=True, add_bias=True)
 
-            # 2nd branch
-            conv_1x1_2 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_2',
-                                              add_relu=True, add_bias=True)
-            conv_3x3_2 = nn.conv_layer_truncated_normal(conv_1x1_2, 3, num_out, name='conv_' + mod_name + '_3x3_2',
-                                              add_relu=True, add_bias=True)
+                # 2nd branch
+                conv_1x1_2 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_2',
+                                                  add_relu=True, add_bias=True)
+                conv_3x3_2 = nn.conv_layer_truncated_normal(conv_1x1_2, 3, num_out, name='conv_' + mod_name + '_3x3_2',
+                                                  add_relu=True, add_bias=True)
 
-            # 3rd branch
-            conv_1x1_3 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_3',
-                                              add_relu=True, add_bias=True)
-            conv_5x5_3 = nn.conv_layer_truncated_normal(conv_1x1_3, 5, num_out, name='conv_' + mod_name + '_5x5_3',
-                                              add_relu=True, add_bias=True)
+                # 3rd branch
+                conv_1x1_3 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_3',
+                                                  add_relu=True, add_bias=True)
+                conv_5x5_3 = nn.conv_layer_truncated_normal(conv_1x1_3, 5, num_out, name='conv_' + mod_name + '_5x5_3',
+                                                  add_relu=True, add_bias=True)
 
-            # 4th branch
-            maxpool_4 = max_pool_3x3_s1(in_tensor)
-            conv_1x1_4 = nn.conv_layer_truncated_normal(maxpool_4, 1, num_out, name='conv_' + mod_name + '_1x1_4',
-                                              add_relu=True, add_bias=True)
+                # 4th branch
+                maxpool_4 = max_pool_3x3_s1(in_tensor)
+                conv_1x1_4 = nn.conv_layer_truncated_normal(maxpool_4, 1, num_out, name='conv_' + mod_name + '_1x1_4',
+                                                  add_relu=True, add_bias=True)
 
-            # Use the gradient-integration-derivative if required, else concat the tensors
-            tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
-            if use_gid:
-                inception_out = gradient_integration_derivative(tensor_array1, add_weights=True)
-            else:
-                inception_out = tf.concat(tensor_array1, axis=3)
+                # Use the gradient-integration-derivative if required, else concat the tensors
+                tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
+                if use_gid:
+                    inception_out = gradient_integration_derivative(tensor_array1, add_weights=True)
+                else:
+                    inception_out = tf.concat(tensor_array1, axis=3)
 
             return inception_out
 
@@ -186,13 +187,17 @@ def main():
     sess = tf.Session(graph=graph)
 
     # initialize variables
-    sess.run(init)
+    run_metadata = tf.RunMetadata()
+    sess.run(init, run_metadata=run_metadata)
     print("Model initialized.")
     time_str = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     val_writer_path = os.path.join('log_files', 'val_' + time_str)
     if not os.path.exists(val_writer_path):
         os.makedirs(val_writer_path)
-    val_writer = tf.summary.FileWriter(val_writer_path)
+    val_writer = tf.summary.FileWriter(val_writer_path, sess.graph)
+    val_writer.add_run_metadata(run_metadata, 'step%d' % 0)
+
+
 
 
     # set use_previous=1 to use file_path model
