@@ -22,8 +22,8 @@ def main():
 
     batch_size = 50
     test_batch_size = 100
-    output_map1 = 33
-    output_map2 = 66
+    output_map1 = 32
+    output_map2 = 64
     no_HiddenNodes = 700 #1028
     no_OutputNodes = 10
     OutputConv1x1 = 16
@@ -72,6 +72,19 @@ def main():
 
         def max_pool_3x3_s1(x):
             return tf.nn.max_pool(x, ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='SAME')
+
+        def split_and_concat(array, num_split):
+            arrays = [[] for _ in range(num_split)]
+            for elem in array:
+                elems = tf.split(elem, num_or_size_splits=num_split, axis=3)
+                for idx, array in enumerate(arrays):
+                    array.append(elems[idx])
+
+            tensors = []
+            for idx, array in enumerate(arrays):
+                tensors.append(tf.concat(array, axis=3))
+
+            return tensors
 
         ########### Inception Module 1 #############
         #
@@ -152,13 +165,20 @@ def main():
             conv1_1x1_4 = conv2d_s1(maxpool1, W_conv1_1x1_4) + b_conv1_1x1_4
 
             # concatenate all the feature maps and add a relu
-            inception1_temp = tf.nn.relu(tf.concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4], axis=3))
+            # inception1_temp = tf.nn.relu(tf.concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4], axis=3))
             # inception1_I1, inception1_C1x, inception1_C1y = tf.split(inception1_temp, 3, axis=3)
             # inception1_gf = gf.gradient_domain_merging_with_orientation(inception1_I1, inception1_C1x, inception1_C1y, greens_function)
             # inception1_gf_1x1, _ = nn.conv_layer_uniform(inception1_gf, 1, num_output=int(input_map1/4),
             #                                          name='in1_gf_1x1', add_bias=True, add_relu=False)
             # inception1 = tf.concat([inception1_temp, inception1_gf_1x1], axis=3)
-            inception1 = inception1_temp
+            # inception1 = inception1_temp
+
+            inception1_C1x, inception1_C1y = split_and_concat([conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4],
+                                                              num_split=2)
+
+            inception1_gf = gf.gradient_domain_integration(inception1_C1x, inception1_C1y, greens_function)
+            in1x, in1y = tf.image.image_gradients(inception1_gf)
+            inception1 = tf.concat([tf.nn.relu(in1x), tf.nn.relu(in1y)], axis=3)
 
             # Inception Module 2
             conv2_1x1_1 = conv2d_s1(inception1, W_conv2_1x1_1) + b_conv2_1x1_1
@@ -169,18 +189,7 @@ def main():
             maxpool2 = max_pool_3x3_s1(inception1)
             conv2_1x1_4 = conv2d_s1(maxpool2, W_conv2_1x1_4) + b_conv2_1x1_4
 
-            def split_and_concat(array, num_split):
-                arrays = [[] for _ in range(num_split)]
-                for elem in array:
-                    elems = tf.split(elem, num_or_size_splits=num_split, axis=3)
-                    for idx, array in enumerate(arrays):
-                        array.append(elems[idx])
 
-                tensors = []
-                for idx, array in enumerate(arrays):
-                    tensors.append(tf.concat(array, axis=3))
-
-                return tensors
 
 
             # concatenate all the feature maps and add a relu
@@ -196,7 +205,7 @@ def main():
             in2x, in2y = tf.image.image_gradients(inception2_gf)
             # inception2 = tf.concat([inception2_I1, inception2_C1x, inception2_C1y, inception2_gf], axis=3)
             # inception2 = tf.concat([inception2_gf, in2x, in2y], axis=
-            inception2 = tf.concat([in2x, in2y], axis=3)
+            inception2 = tf.concat([tf.nn.relu(in2x), tf.nn.relu(in2y)], axis=3)
 
             # in2x, in2y = tf.split(inception2_temp, 2)
             # inception2 = gf.gradient_domain_integration(in2x, in2y, greens_function)
