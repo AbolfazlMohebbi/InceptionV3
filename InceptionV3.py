@@ -28,12 +28,12 @@ def main():
     no_OutputNodes = 10
     OutputConv1x1 = 16
     dropout_rate=0.5
-    use_gid = False
+    use_gid = True
     learning_rate = 1e-4
     im_width = 28
     im_height = 28
     im_pix = im_height * im_width
-    num_steps = 100
+    num_steps = 2000
 
 
 
@@ -52,14 +52,8 @@ def main():
     graph = tf.Graph()
     with graph.as_default():
         # train data and labels
-        X = tf.placeholder(tf.float32, shape=(batch_size, im_width, im_height, 1))
-        y_ = tf.placeholder(tf.float32, shape=(batch_size, 10))
-
-        # validation data
-        tf_valX = tf.placeholder(tf.float32, shape=(len(valX), im_width, im_height, 1))
-
-        # test data
-        tf_testX = tf.placeholder(tf.float32, shape=(test_batch_size, im_width, im_height, 1))
+        X = tf.placeholder(tf.float32, shape=(None, im_width, im_height, 1))
+        y_ = tf.placeholder(tf.float32, shape=(None, 10))
 
         def createWeight(size, Name):
             return tf.Variable(tf.truncated_normal(size, stddev=0.1), name=Name)
@@ -86,15 +80,15 @@ def main():
 
             return tensors
 
-        def gradient_integration_derivative(array_of_tensors, add_weights=True):
+        def gradient_integration_derivative(array_of_tensors, num_out, add_weights=True):
             # Split each array of the tensor and concat them as 2 tensors
             C1x_temp, C1y_temp = split_and_concat(array_of_tensors, num_split=2)
 
             # Add weights if necessary
             if add_weights:
                 num_channels = tf.shape(C1x_temp)
-                C1x, _ = nn.conv_layer_uniform(C1x_temp, 1, num_channels[3], 'weights_before_GDI_C1x', add_bias=False, add_relu=False)
-                C1y, _ = nn.conv_layer_uniform(C1y_temp, 1, num_channels[3], 'weights_before_GDI_C1y', add_bias=False, add_relu=False)
+                C1x, _ = nn.conv_layer_uniform(C1x_temp, 1, 2*num_out, 'weights_before_GDI_C1x', add_bias=False, add_relu=False)
+                C1y, _ = nn.conv_layer_uniform(C1y_temp, 1, 2*num_out, 'weights_before_GDI_C1y', add_bias=False, add_relu=False)
             else:
                 C1x = C1x_temp
                 C1y = C1y_temp
@@ -136,7 +130,7 @@ def main():
                 # Use the gradient-integration-derivative if required, else concat the tensors
                 tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
                 if use_gid:
-                    inception_out = gradient_integration_derivative(tensor_array1, add_weights=True)
+                    inception_out = gradient_integration_derivative(tensor_array1, num_out=num_out, add_weights=True)
                 else:
                     inception_out = tf.concat(tensor_array1, axis=3)
 
@@ -157,6 +151,7 @@ def main():
         greens_function = gf.create_green_function((im_width, im_height))
 
         def model(x, train=True):
+
             in_1 = inception_module(x, output_map1, 'in_1', use_gid=use_gid)
             in_2 = inception_module(in_1, output_map2, 'in_2', use_gid=use_gid)
 
@@ -164,19 +159,19 @@ def main():
             inception2_flat = tf.reshape(in_2, [-1, im_pix * input_map2])
 
             # Fully connected layers
-            if train:
-                h_fc1 = tf.nn.dropout(tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1), dropout_rate)
-            else:
-                h_fc1 = tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1)
+            h_fc1_train = tf.nn.dropout(tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1), dropout_rate)
+            out_train = tf.matmul(h_fc1_train, W_fc2) + b_fc2
 
-            return tf.matmul(h_fc1, W_fc2) + b_fc2
+            h_fc1_not_train = tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1)
+            out_not_train = tf.matmul(h_fc1_not_train, W_fc2) + b_fc2
+            return out_train, out_not_train
 
-        this_model = model(X)
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=this_model, labels=y_))
+        out_train, out_not_train = model(X)
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=out_train, labels=y_))
         opt = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
-        predictions_val = tf.nn.softmax(model(tf_valX, train=False))
-        predictions_test = tf.nn.softmax(model(tf_testX, train=False))
+        predictions_val = tf.nn.softmax(out_not_train)
+        predictions_test = tf.nn.softmax(out_not_train)
 
         # initialize variable
         init = tf.initialize_all_variables()
@@ -218,7 +213,7 @@ def main():
         feed_dict = {X: batch_x, y_: batch_y}
         _, loss_value = sess.run([opt, loss], feed_dict=feed_dict)
         if s % 100 == 0:
-            feed_dict = {tf_valX: valX}
+            feed_dict = {X: valX}
             preds = sess.run(predictions_val, feed_dict=feed_dict)
             val_accuracy = accuracy(val_label, preds)
             this_summary = summary_pb2.Summary(value=[summary_pb2.Summary.Value(tag='val_accuracy', simple_value=val_accuracy)])
@@ -235,7 +230,7 @@ def main():
             result = np.array([]).reshape(0, 10)
 
             for i in range(int(len(testX) / test_batch_size)):
-                feed_dict = {tf_testX: data.next_test_batches(testX, test_batch_size)}
+                feed_dict = {X: data.next_test_batches(testX, test_batch_size)}
                 preds = sess.run(predictions_test, feed_dict=feed_dict)
                 result = np.concatenate((result, preds), axis=0)
 
