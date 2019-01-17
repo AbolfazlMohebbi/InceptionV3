@@ -2,213 +2,246 @@ import numpy as np
 import tensorflow as tf
 import os
 import LoadData as LD
+from tensorflow.core.framework import summary_pb2
+import datetime
+import deep_Core.green_functions as gf
+from numba import cuda
+import deep_Core.neural_net_functions as nn
 
-# data path
-TrainPath = 'data\mnist_train.csv'
-TestPath = 'data\mnist_test.csv'
+def main():
+    # data path
+    TrainPath = 'data\mnist_train.csv'
+    TestPath = 'data\mnist_test.csv'
 
-# To load from a previous model
-Model_file_path = os.getcwd()+'/model.ckpt'
+    # To load from a previous model
+    Model_file_path = os.getcwd()+'/model.ckpt'
 
-#accuracy of model
-def accuracy(target,predictions):
-    return(100.0*np.sum(np.argmax(target,1) == np.argmax(predictions,1))/target.shape[0])
+    #accuracy of model
+    def accuracy(target,predictions):
+        return(100.0*np.sum(np.argmax(target,1) == np.argmax(predictions,1))/target.shape[0])
 
-batch_size = 50
-test_batch_size = 100
-output_map1 = 32
-output_map2 = 64
-no_HiddenNodes = 700 #1028
-no_OutputNodes = 10
-OutputConv1x1 = 16
-dropout_rate=0.5
-
-# batch_size: training batch size
-# output_map1: number of feature maps output by each tower inside the first Inception module
-# output_map2: number of feature maps output by each tower inside the second Inception module
-# no_HiddenNodes: number of hidden nodes
-# No_OutputNodes: number of output nodes
-# OutputConv1x1: number of feature maps output by each 1×1 convolution that precedes a large convolution
-# dropout_rate: dropout rate for nodes in the hidden layer during training
-
-# Load the data
-data = LD.LoadData(TrainPath, TestPath)
-trainX, testX, valX, train_label, test_label, val_label = data.LoadMNIST()
-
-graph = tf.Graph()
-with graph.as_default():
-    # train data and labels
-    X = tf.placeholder(tf.float32, shape=(batch_size, 28, 28, 1))
-    y_ = tf.placeholder(tf.float32, shape=(batch_size, 10))
-
-    # validation data
-    tf_valX = tf.placeholder(tf.float32, shape=(len(valX), 28, 28, 1))
-
-    # test data
-    tf_testX = tf.placeholder(tf.float32, shape=(test_batch_size, 28, 28, 1))
-
-    def createWeight(size, Name):
-        return tf.Variable(tf.truncated_normal(size, stddev=0.1), name=Name)
-
-    def createBias(size, Name):
-        return tf.Variable(tf.constant(0.1, shape=size), name=Name)
-
-    def conv2d_s1(x, W):
-        return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
-
-    def max_pool_3x3_s1(x):
-        return tf.nn.max_pool(x, ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='SAME')
-
-    ########### Inception Module 1 #############
-    #
-    # follows input
-    W_conv1_1x1_1 = createWeight([1, 1, 1, output_map1], 'W_conv1_1x1_1')
-    b_conv1_1x1_1 = createWeight([output_map1], 'b_conv1_1x1_1')
-
-    # follows input
-    W_conv1_1x1_2 = createWeight([1, 1, 1, OutputConv1x1], 'W_conv1_1x1_2')
-    b_conv1_1x1_2 = createWeight([OutputConv1x1], 'b_conv1_1x1_2')
-
-    # follows input
-    W_conv1_1x1_3 = createWeight([1, 1, 1, OutputConv1x1], 'W_conv1_1x1_3')
-    b_conv1_1x1_3 = createWeight([OutputConv1x1], 'b_conv1_1x1_3')
-
-    # follows 1x1_2
-    W_conv1_3x3 = createWeight([3, 3, OutputConv1x1, output_map1], 'W_conv1_3x3')
-    b_conv1_3x3 = createWeight([output_map1], 'b_conv1_3x3')
-
-    # follows 1x1_3
-    W_conv1_5x5 = createWeight([5, 5, OutputConv1x1, output_map1], 'W_conv1_5x5')
-    b_conv1_5x5 = createBias([output_map1], 'b_conv1_5x5')
-
-    # follows max pooling
-    W_conv1_1x1_4 = createWeight([1, 1, 1, output_map1], 'W_conv1_1x1_4')
-    b_conv1_1x1_4 = createWeight([output_map1], 'b_conv1_1x1_4')
-
-    ########### Inception Module 2 #############
-    #
-    # follows inception1
-    W_conv2_1x1_1 = createWeight([1, 1, 4 * output_map1, output_map2], 'W_conv2_1x1_1')
-    b_conv2_1x1_1 = createWeight([output_map2], 'b_conv2_1x1_1')
-
-    # follows inception1
-    W_conv2_1x1_2 = createWeight([1, 1, 4 * output_map1, OutputConv1x1], 'W_conv2_1x1_2')
-    b_conv2_1x1_2 = createWeight([OutputConv1x1], 'b_conv2_1x1_2')
-
-    # follows inception1
-    W_conv2_1x1_3 = createWeight([1, 1, 4 * output_map1, OutputConv1x1], 'W_conv2_1x1_3')
-    b_conv2_1x1_3 = createWeight([OutputConv1x1], 'b_conv2_1x1_3')
-
-    # follows 1x1_2
-    W_conv2_3x3 = createWeight([3, 3, OutputConv1x1, output_map2], 'W_conv2_3x3')
-    b_conv2_3x3 = createWeight([output_map2], 'b_conv2_3x3')
-
-    # follows 1x1_3
-    W_conv2_5x5 = createWeight([5, 5, OutputConv1x1, output_map2], 'W_conv2_5x5')
-    b_conv2_5x5 = createBias([output_map2], 'b_conv2_5x5')
-
-    # follows max pooling
-    W_conv2_1x1_4 = createWeight([1, 1, 4 * output_map1, output_map2], 'W_conv2_1x1_4')
-    b_conv2_1x1_4 = createWeight([output_map2], 'b_conv2_1x1_4')
-
-    ############ Fully connected layers #############
-    # since padding is same, the feature map with there will be 4 28*28*output_map2
-    W_fc1 = createWeight([28 * 28 * (4 * output_map2), no_HiddenNodes], 'W_fc1')
-    b_fc1 = createBias([no_HiddenNodes], 'b_fc1')
-
-    W_fc2 = createWeight([no_HiddenNodes, no_OutputNodes], 'W_fc2')
-    b_fc2 = createBias([no_OutputNodes], 'b_fc2')
-
-    def model(x, train=True):
-        # Inception Module 1
-        conv1_1x1_1 = conv2d_s1(x, W_conv1_1x1_1) + b_conv1_1x1_1
-        conv1_1x1_2 = tf.nn.relu(conv2d_s1(x, W_conv1_1x1_2) + b_conv1_1x1_2)
-        conv1_1x1_3 = tf.nn.relu(conv2d_s1(x, W_conv1_1x1_3) + b_conv1_1x1_3)
-        conv1_3x3 = conv2d_s1(conv1_1x1_2, W_conv1_3x3) + b_conv1_3x3
-        conv1_5x5 = conv2d_s1(conv1_1x1_3, W_conv1_5x5) + b_conv1_5x5
-        maxpool1 = max_pool_3x3_s1(x)
-        conv1_1x1_4 = conv2d_s1(maxpool1, W_conv1_1x1_4) + b_conv1_1x1_4
-
-        # concatenate all the feature maps and add a relu
-        inception1 = tf.nn.relu(tf.concat(3, [conv1_1x1_1, conv1_3x3, conv1_5x5, conv1_1x1_4]))
-
-        # Inception Module 2
-        conv2_1x1_1 = conv2d_s1(inception1, W_conv2_1x1_1) + b_conv2_1x1_1
-        conv2_1x1_2 = tf.nn.relu(conv2d_s1(inception1, W_conv2_1x1_2) + b_conv2_1x1_2)
-        conv2_1x1_3 = tf.nn.relu(conv2d_s1(inception1, W_conv2_1x1_3) + b_conv2_1x1_3)
-        conv2_3x3 = conv2d_s1(conv2_1x1_2, W_conv2_3x3) + b_conv2_3x3
-        conv2_5x5 = conv2d_s1(conv2_1x1_3, W_conv2_5x5) + b_conv2_5x5
-        maxpool2 = max_pool_3x3_s1(inception1)
-        conv2_1x1_4 = conv2d_s1(maxpool2, W_conv2_1x1_4) + b_conv2_1x1_4
-
-        # concatenate all the feature maps and add a relu
-        inception2 = tf.nn.relu(tf.concat(3, [conv2_1x1_1, conv2_3x3, conv2_5x5, conv2_1x1_4]))
-
-        # flatten features for fully connected layer
-        inception2_flat = tf.reshape(inception2, [-1, 28 * 28 * 4 * output_map2])
-
-        # Fully connected layers
-        if train:
-            h_fc1 = tf.nn.dropout(tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1), dropout_rate)
-        else:
-            h_fc1 = tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1)
-
-        return tf.matmul(h_fc1, W_fc2) + b_fc2
+    batch_size = 50
+    test_batch_size = 100
+    output_map1 = 32
+    output_map2 = 64
+    no_HiddenNodes = 700 #1028
+    no_OutputNodes = 10
+    OutputConv1x1 = 16
+    dropout_rate=0.5
+    use_gid = True
+    learning_rate = 1e-4
+    im_width = 28
+    im_height = 28
+    im_pix = im_height * im_width
+    num_steps = 2000
 
 
-    loss = tf.reduce_mean(
-        tf.nn.softmax_cross_entropy_with_logits(model(X), y_))
-    opt = tf.train.AdamOptimizer(1e-4).minimize(loss)
 
-    predictions_val = tf.nn.softmax(model(tf_valX, train=False))
-    predictions_test = tf.nn.softmax(model(tf_testX, train=False))
+    # batch_size: training batch size
+    # output_map1: number of feature maps output by each tower inside the first Inception module
+    # output_map2: number of feature maps output by each tower inside the second Inception module
+    # no_HiddenNodes: number of hidden nodes
+    # No_OutputNodes: number of output nodes
+    # OutputConv1x1: number of feature maps output by each 1×1 convolution that precedes a large convolution
+    # dropout_rate: dropout rate for nodes in the hidden layer during training
 
-    # initialize variable
-    init = tf.initialize_all_variables()
+    # Load the data
+    data = LD.LoadData(TrainPath, TestPath)
+    trainX, testX, valX, train_label, test_label, val_label = data.LoadMNIST()
 
-    # use to save variables so we can pick up later
-    saver = tf.train.Saver()
+    graph = tf.Graph()
+    with graph.as_default():
+        # train data and labels
+        X = tf.placeholder(tf.float32, shape=(None, im_width, im_height, 1))
+        y_ = tf.placeholder(tf.float32, shape=(None, 10))
 
-num_steps = 20000
-sess = tf.Session(graph=graph)
+        def createWeight(size, Name):
+            return tf.Variable(tf.truncated_normal(size, stddev=0.1), name=Name)
 
-# initialize variables
-sess.run(init)
-print("Model initialized.")
+        def createBias(size, Name):
+            return tf.Variable(tf.constant(0.1, shape=size), name=Name)
 
-# set use_previous=1 to use file_path model
-# set use_previous=0 to start model from scratch
-use_previous = 0
+        def conv2d_s1(x, W):
+            return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
 
-# use the previous model or don't and initialize variables
-if use_previous:
-    saver.restore(sess, Model_file_path)
-    print("Model restored.")
+        def max_pool_3x3_s1(x):
+            return tf.nn.max_pool(x, ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='SAME')
 
-# training
-for s in range(num_steps):
-    offset = (s * batch_size) % (len(trainX) - batch_size)
-    batch_x, batch_y = trainX[offset:(offset + batch_size), :], train_label[offset:(offset + batch_size), :]
-    feed_dict = {X: batch_x, y_: batch_y}
-    _, loss_value = sess.run([opt, loss], feed_dict=feed_dict)
-    if s % 100 == 0:
-        feed_dict = {tf_valX: valX}
-        preds = sess.run(predictions_val, feed_dict=feed_dict)
+        def split_and_concat(array, num_split):
+            arrays = [[] for _ in range(num_split)]
+            for elem in array:
+                elems = tf.split(elem, num_or_size_splits=num_split, axis=3)
+                for idx, array in enumerate(arrays):
+                    array.append(elems[idx])
 
-        print("step: " + str(s))
-        print("validation accuracy: " + str(accuracy(val_label, preds)))
-        print(" ")
+            tensors = []
+            for idx, array in enumerate(arrays):
+                tensors.append(tf.concat(array, axis=3))
 
-    # get test accuracy and save model
-    if s == (num_steps - 1):
-        # create an array to store the outputs for the test
-        result = np.array([]).reshape(0, 10)
+            return tensors
 
-        for i in range(len(testX) / test_batch_size):
-            feed_dict = {tf_testX: data.next_test_batches(testX, test_batch_size)}
-            preds = sess.run(predictions_test, feed_dict=feed_dict)
-            result = np.concatenate((result, preds), axis=0)
+        def gradient_integration_derivative(array_of_tensors, num_out, add_weights=True):
+            # Split each array of the tensor and concat them as 2 tensors
+            C1x_temp, C1y_temp = split_and_concat(array_of_tensors, num_split=2)
 
-        print("test accuracy: " + str(accuracy(test_label, result)))
-        save_path = saver.save(sess, Model_file_path)
-        print("Model saved.")
+            # Add weights if necessary
+            if add_weights:
+                num_channels = tf.shape(C1x_temp)
+                C1x, _ = nn.conv_layer_uniform(C1x_temp, 1, 2*num_out, 'weights_before_GDI_C1x', add_bias=False, add_relu=False)
+                C1y, _ = nn.conv_layer_uniform(C1y_temp, 1, 2*num_out, 'weights_before_GDI_C1y', add_bias=False, add_relu=False)
+            else:
+                C1x = C1x_temp
+                C1y = C1y_temp
+
+            # Integrate then derivate the features
+            integration = gf.gradient_domain_integration(C1x, C1y, greens_function)
+            integration_dx, integration_dy = tf.image.image_gradients(integration)
+            integration_gradient = tf.concat([tf.nn.relu(integration_dx), tf.nn.relu(integration_dy)], axis=3)
+            return integration_gradient
+
+        def inception_module(in_tensor, layers_output_channels, mod_name, use_gid=False):
+
+            with tf.name_scope(mod_name):
+                # Add all the convolutional layers
+                num_out = layers_output_channels
+                num_out_half = int(num_out/2)
+
+                # 1st branch
+                conv_1x1_1 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out, name='conv_' + mod_name + '_1x1_1',
+                                                  add_relu=True, add_bias=True)
+
+                # 2nd branch
+                conv_1x1_2 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_2',
+                                                  add_relu=True, add_bias=True)
+                conv_3x3_2 = nn.conv_layer_truncated_normal(conv_1x1_2, 3, num_out, name='conv_' + mod_name + '_3x3_2',
+                                                  add_relu=True, add_bias=True)
+
+                # 3rd branch
+                conv_1x1_3 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_3',
+                                                  add_relu=True, add_bias=True)
+                conv_5x5_3 = nn.conv_layer_truncated_normal(conv_1x1_3, 5, num_out, name='conv_' + mod_name + '_5x5_3',
+                                                  add_relu=True, add_bias=True)
+
+                # 4th branch
+                maxpool_4 = max_pool_3x3_s1(in_tensor)
+                conv_1x1_4 = nn.conv_layer_truncated_normal(maxpool_4, 1, num_out, name='conv_' + mod_name + '_1x1_4',
+                                                  add_relu=True, add_bias=True)
+
+                # Use the gradient-integration-derivative if required, else concat the tensors
+                tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
+                if use_gid:
+                    inception_out = gradient_integration_derivative(tensor_array1, num_out=num_out, add_weights=True)
+                else:
+                    inception_out = tf.concat(tensor_array1, axis=3)
+
+            return inception_out
+
+        input_map1 = 4 * output_map1
+        input_map2 = 4 * output_map2
+
+
+        ############ Fully connected layers #############
+        # since padding is same, the feature map with there will be 4 28*28*output_map2
+        W_fc1 = createWeight([input_map2 * im_pix, no_HiddenNodes], 'W_fc1')
+        b_fc1 = createBias([no_HiddenNodes], 'b_fc1')
+
+        W_fc2 = createWeight([no_HiddenNodes, no_OutputNodes], 'W_fc2')
+        b_fc2 = createBias([no_OutputNodes], 'b_fc2')
+
+        greens_function = gf.create_green_function((im_width, im_height))
+
+        def model(x, train=True):
+
+            in_1 = inception_module(x, output_map1, 'in_1', use_gid=use_gid)
+            in_2 = inception_module(in_1, output_map2, 'in_2', use_gid=use_gid)
+
+            # flatten features for fully connected layer
+            inception2_flat = tf.reshape(in_2, [-1, im_pix * input_map2])
+
+            # Fully connected layers
+            h_fc1_train = tf.nn.dropout(tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1), dropout_rate)
+            out_train = tf.matmul(h_fc1_train, W_fc2) + b_fc2
+
+            h_fc1_not_train = tf.nn.relu(tf.matmul(inception2_flat, W_fc1) + b_fc1)
+            out_not_train = tf.matmul(h_fc1_not_train, W_fc2) + b_fc2
+            return out_train, out_not_train
+
+        out_train, out_not_train = model(X)
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=out_train, labels=y_))
+        opt = tf.train.AdamOptimizer(learning_rate).minimize(loss)
+
+        predictions_val = tf.nn.softmax(out_not_train)
+        predictions_test = tf.nn.softmax(out_not_train)
+
+        # initialize variable
+        init = tf.initialize_all_variables()
+
+        # use to save variables so we can pick up later
+        saver = tf.train.Saver()
+
+    sess = tf.Session(graph=graph)
+
+    # initialize variables
+    run_metadata = tf.RunMetadata()
+    sess.run(init, run_metadata=run_metadata)
+    print("Model initialized.")
+    time_str = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    val_writer_path = os.path.join('log_files', 'val_' + time_str)
+    if not os.path.exists(val_writer_path):
+        os.makedirs(val_writer_path)
+    val_writer = tf.summary.FileWriter(val_writer_path, sess.graph)
+    val_writer.add_run_metadata(run_metadata, 'step%d' % 0)
+
+
+
+
+    # set use_previous=1 to use file_path model
+    # set use_previous=0 to start model from scratch
+    use_previous = 0
+
+    # use the previous model or don't and initialize variables
+    if use_previous:
+        saver.restore(sess, Model_file_path)
+        print("Model restored.")
+
+
+
+    # training
+    for s in range(num_steps):
+        offset = (s * batch_size) % (len(trainX) - batch_size)
+        batch_x, batch_y = trainX[offset:(offset + batch_size), :], train_label[offset:(offset + batch_size), :]
+        feed_dict = {X: batch_x, y_: batch_y}
+        _, loss_value = sess.run([opt, loss], feed_dict=feed_dict)
+        if s % 100 == 0:
+            feed_dict = {X: valX}
+            preds = sess.run(predictions_val, feed_dict=feed_dict)
+            val_accuracy = accuracy(val_label, preds)
+            this_summary = summary_pb2.Summary(value=[summary_pb2.Summary.Value(tag='val_accuracy', simple_value=val_accuracy)])
+            val_writer.add_summary(this_summary, s)
+
+            print("step: " + str(s))
+            print("loss value: " + str(loss_value))
+            print("validation accuracy: " + str(val_accuracy))
+            print(" ")
+
+        # get test accuracy and save model
+        if s == (num_steps - 1):
+            # create an array to store the outputs for the test
+            result = np.array([]).reshape(0, 10)
+
+            for i in range(int(len(testX) / test_batch_size)):
+                feed_dict = {X: data.next_test_batches(testX, test_batch_size)}
+                preds = sess.run(predictions_test, feed_dict=feed_dict)
+                result = np.concatenate((result, preds), axis=0)
+
+            print("test accuracy: " + str(accuracy(test_label, result)))
+            save_path = saver.save(sess, Model_file_path)
+            print("Model saved.")
+
+    sess.close()
+    cuda.close()
+
+
+if __name__ == "__main__":
+    main()
+

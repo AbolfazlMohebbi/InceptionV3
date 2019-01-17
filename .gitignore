@@ -1,0 +1,9 @@
+
+__pycache__/
+
+data/mnist_test\.csv
+
+data/mnist_train\.csv
+*.idea
+log_files/*
+model.ckpt*
