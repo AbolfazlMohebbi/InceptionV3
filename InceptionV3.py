@@ -6,7 +6,7 @@ from tensorflow.core.framework import summary_pb2
 import datetime
 import deep_Core.green_functions as gf
 from numba import cuda
-import deep_Core.neural_net_functions as nn
+import deep_Core.inception_modules as im
 
 def main():
     # data path
@@ -24,16 +24,15 @@ def main():
     test_batch_size = 100
     output_map1 = 32
     output_map2 = 64
-    no_HiddenNodes = 700 #1028
+    no_HiddenNodes = 700 #1024
     no_OutputNodes = 10
-    OutputConv1x1 = 16
     dropout_rate=0.5
     use_gid = True
     learning_rate = 1e-4
     im_width = 28
     im_height = 28
     im_pix = im_height * im_width
-    num_steps = 2000
+    num_steps = 20000
 
 
 
@@ -61,80 +60,6 @@ def main():
         def createBias(size, Name):
             return tf.Variable(tf.constant(0.1, shape=size), name=Name)
 
-        def conv2d_s1(x, W):
-            return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
-
-        def max_pool_3x3_s1(x):
-            return tf.nn.max_pool(x, ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='SAME')
-
-        def split_and_concat(array, num_split):
-            arrays = [[] for _ in range(num_split)]
-            for elem in array:
-                elems = tf.split(elem, num_or_size_splits=num_split, axis=3)
-                for idx, array in enumerate(arrays):
-                    array.append(elems[idx])
-
-            tensors = []
-            for idx, array in enumerate(arrays):
-                tensors.append(tf.concat(array, axis=3))
-
-            return tensors
-
-        def gradient_integration_derivative(array_of_tensors, num_out, add_weights=True):
-            # Split each array of the tensor and concat them as 2 tensors
-            C1x_temp, C1y_temp = split_and_concat(array_of_tensors, num_split=2)
-
-            # Add weights if necessary
-            if add_weights:
-                num_channels = tf.shape(C1x_temp)
-                C1x, _ = nn.conv_layer_uniform(C1x_temp, 1, 2*num_out, 'weights_before_GDI_C1x', add_bias=False, add_relu=False)
-                C1y, _ = nn.conv_layer_uniform(C1y_temp, 1, 2*num_out, 'weights_before_GDI_C1y', add_bias=False, add_relu=False)
-            else:
-                C1x = C1x_temp
-                C1y = C1y_temp
-
-            # Integrate then derivate the features
-            integration = gf.gradient_domain_integration(C1x, C1y, greens_function)
-            integration_dx, integration_dy = tf.image.image_gradients(integration)
-            integration_gradient = tf.concat([tf.nn.relu(integration_dx), tf.nn.relu(integration_dy)], axis=3)
-            return integration_gradient
-
-        def inception_module(in_tensor, layers_output_channels, mod_name, use_gid=False):
-
-            with tf.name_scope(mod_name):
-                # Add all the convolutional layers
-                num_out = layers_output_channels
-                num_out_half = int(num_out/2)
-
-                # 1st branch
-                conv_1x1_1 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out, name='conv_' + mod_name + '_1x1_1',
-                                                  add_relu=True, add_bias=True)
-
-                # 2nd branch
-                conv_1x1_2 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_2',
-                                                  add_relu=True, add_bias=True)
-                conv_3x3_2 = nn.conv_layer_truncated_normal(conv_1x1_2, 3, num_out, name='conv_' + mod_name + '_3x3_2',
-                                                  add_relu=True, add_bias=True)
-
-                # 3rd branch
-                conv_1x1_3 = nn.conv_layer_truncated_normal(in_tensor, 1, num_out_half, name='conv_' + mod_name + '_1x1_3',
-                                                  add_relu=True, add_bias=True)
-                conv_5x5_3 = nn.conv_layer_truncated_normal(conv_1x1_3, 5, num_out, name='conv_' + mod_name + '_5x5_3',
-                                                  add_relu=True, add_bias=True)
-
-                # 4th branch
-                maxpool_4 = max_pool_3x3_s1(in_tensor)
-                conv_1x1_4 = nn.conv_layer_truncated_normal(maxpool_4, 1, num_out, name='conv_' + mod_name + '_1x1_4',
-                                                  add_relu=True, add_bias=True)
-
-                # Use the gradient-integration-derivative if required, else concat the tensors
-                tensor_array1 = [conv_1x1_1, conv_3x3_2, conv_5x5_3, conv_1x1_4]
-                if use_gid:
-                    inception_out = gradient_integration_derivative(tensor_array1, num_out=num_out, add_weights=True)
-                else:
-                    inception_out = tf.concat(tensor_array1, axis=3)
-
-            return inception_out
 
         input_map1 = 4 * output_map1
         input_map2 = 4 * output_map2
@@ -148,12 +73,15 @@ def main():
         W_fc2 = createWeight([no_HiddenNodes, no_OutputNodes], 'W_fc2')
         b_fc2 = createBias([no_OutputNodes], 'b_fc2')
 
-        greens_function = gf.create_green_function((im_width, im_height))
+        if use_gid:
+            green_function = gf.create_green_function((im_width, im_height))
+        else:
+            green_function = None
 
-        def model(x, train=True):
+        def model(x):
 
-            in_1 = inception_module(x, output_map1, 'in_1', use_gid=use_gid)
-            in_2 = inception_module(in_1, output_map2, 'in_2', use_gid=use_gid)
+            in_1 = im.inception_module_v1(x, output_map1, 'in_1', green_function=green_function)
+            in_2 = im.inception_module_v1(in_1, output_map2, 'in_2', green_function=green_function)
 
             # flatten features for fully connected layer
             inception2_flat = tf.reshape(in_2, [-1, im_pix * input_map2])
